@@ -1,0 +1,1073 @@
+# Per-OS allowlist of show commands.
+#
+# HARD RULE: this file is the ONLY source of commands the tool may send to a
+# device. Anything not listed here raises CommandNotAllowed. Only "show"
+# commands belong here — see disconet/collector.py::CommandPolicy, which
+# additionally rejects any entry that is not a show command or that contains a
+# configuration keyword.
+#
+# Structure:
+#   <os>:
+#     parse:     ordered list of allowlisted show commands collected from every
+#                device, whatever the engineer selected. Each is executed once;
+#                the captured output is then handed to the Genie parser. A
+#                command with no parser for this platform keeps its raw text
+#                and is marked `unparsed` in the manifest.
+#     raw_only:  never parsed, raw text only. `show running-config` is
+#                read-only and is collected to source the Appendix B
+#                configuration excerpts, and to tell an interface that is
+#                configured for a routing protocol from one that merely has an
+#                adjacency.
+#     features:  optional groups, each named after a protocol or a service.
+#                Every group is allowlisted and validated exactly like `parse`;
+#                the selection made at collect time decides which groups are
+#                actually SENT. Deselecting a group narrows what leaves the
+#                tool, it never widens it.
+#     probe:     OPT-IN. Ignored unless `collect --verify-reachability` is
+#                given, and the ONLY entries here that are not show commands.
+#                A probe measures reachability rather than reading state, so it
+#                is held to a separate and much narrower rule: the template
+#                must be exactly `ping {addr}`, and {addr} is only ever
+#                substituted with an address this collection itself learned
+#                (a dynamic ARP or IPv6 neighbour entry), validated by Python's
+#                `ipaddress` module before the command is rendered. Nothing
+#                else can be sent — see disconet/collector.py::ProbePolicy.
+#     per_vrf:   templates rendered once per VRF, held to the probe's rule:
+#                the template must be one of the fixed forms in
+#                disconet/collector.py::PER_VRF_TEMPLATES, and {vrf} is only
+#                ever substituted with a VRF name this collection itself
+#                read (from the running configuration or the VRF table),
+#                validated against the characters a VRF name is made of.
+#                Needed where a VRF's ARP table is its own and the OS has no
+#                all-VRFs form: IOS-XE and IOS-XR. NX-OS says `vrf all` and
+#                Junos prints every instance in one table, so neither lists
+#                one.
+#
+# Feature keys are shared by every platform and are what the collect-time menus
+# offer. Protocols: ospf, isis, bgp, vpnv4, ldp, sr, srv6, ptp, bfd, lsdb,
+# multicast, switching, lag, evpn. Services: l3vpn, l2vpn, mplste, srte, qos,
+# routing, management, security. A platform that lacks a group simply has no
+# entry for it, and the menu says so.
+#
+# `sr` and `srv6` are separate keys, as are `mplste` and `srte`: SR-MPLS and
+# SRv6 are different data planes, an RSVP-TE tunnel and an SR-TE policy are
+# different objects, and an estate migrating between them runs both at once.
+#
+# Raw output for every command is redacted at collection time, before it
+# reaches disk: any line carrying a password, secret, key or SNMP community
+# string loses its value.
+
+iosxe:
+  parse:
+    - show version
+    - show inventory
+    # Chassis model and what is installed in it. `show inventory` names the
+    # parts; `show platform` says which slot each one is in and whether it is
+    # up, which is what a hardware table is actually asked for.
+    - show platform
+    - show cdp neighbors detail
+    - show lldp neighbors detail
+    - show ip interface brief
+    # Full form as well as brief: only this one carries the prefix length,
+    # which is what turns an address list into subnets for the Layer 3
+    # addressing table and for point-to-point adjacency.
+    - show ip interface
+    - show ipv6 interface
+    # Genie's IOS-XE parser for the full form above requires every interface to
+    # carry an IPv6 address, so one interface without one loses the whole
+    # device's IPv6 addressing. The brief form has no mask but survives it.
+    - show ipv6 interface brief
+    - show interfaces description
+    # The interface table, for the MAC each port answers with: what a
+    # switch's MAC table calls this router, which places the router on a
+    # switch port without a neighbour protocol and without any address.
+    - show interfaces
+    # ARP and IPv6 neighbour tables: an entry whose address belongs to another
+    # collected interface is direct evidence of an adjacency, independent of
+    # CDP and LLDP. The global table only; each VRF's is read under per_vrf.
+    - show ip arp
+    - show ipv6 neighbors
+  raw_only:
+    - show running-config
+  per_vrf:
+    - show ip arp vrf {vrf}
+  features:
+    ospf:
+      parse:
+        - show ip ospf neighbor
+        # Every OSPF-enabled interface, adjacency or not. This is what tells an
+        # interface that is configured and quiet from one that is not
+        # configured at all, which the infrastructure addressing table has to
+        # distinguish.
+        - show ip ospf interface brief
+        # OSPFv3, asked alongside OSPFv2 because "does this network route
+        # IPv6" is answered protocol by protocol, not by a separate IPv6
+        # selection. Both are read from the text: the neighbour table and
+        # the interfaces OSPFv3 runs on. An IOS-XE process carries an
+        # address family per instance, and the header names it.
+        - show ospfv3 neighbor
+        - show ospfv3 interface brief
+    isis:
+      parse:
+        - show isis neighbors
+        # Every interface, each saying whether IS-IS is its routing protocol:
+        # on IOS and IOS-XE, IS-IS rides CLNS and this is where the interfaces
+        # it runs on are listed. Read from the text. `show isis interface
+        # brief` is the IOS-XR command — Genie parses it for IOS-XR alone —
+        # and asked here it left an estate's IOS-XE routers out of every
+        # table built on IGP interfaces.
+        - show clns interface
+        # The detail form names each neighbour's IPv4 and IPv6 addresses and
+        # the topologies the adjacency carries, which is where "IS-IS carries
+        # IPv6 here" is stated; the summary form above does not say.
+        - show isis neighbors detail
+    lsdb:
+      parse:
+        # The link-state databases, read from the text. One router holds the
+        # whole area or level, so this is where the routers DiscoNet never
+        # reached are named: IS-IS with their hostnames, OSPF by router ID.
+        - show isis database detail
+        - show ip ospf database router
+        - show ip ospf database network
+    bgp:
+      parse:
+        # One command per address family, because "BGP is running" and "this
+        # address family is activated" are different statements and only a
+        # per-family summary tells them apart. A family whose command comes
+        # back empty is not activated; one whose command was never sent is
+        # not collected, and the document says which.
+        - show ip bgp summary
+        - show bgp ipv6 unicast summary
+    vpnv4:
+      parse:
+        - show bgp vpnv4 unicast all summary
+        - show bgp vpnv6 unicast all summary
+    routing:
+      parse:
+        # Never the whole table: the summary says how many routes each
+        # source supplies, and the static and connected routes are the
+        # bounded parts of it. The VRF tables are not summarised here — a
+        # per-VRF command would have to be rendered, and the allowlist holds
+        # literals only.
+        - show ip route summary
+        - show ip route static
+        - show ip route connected
+        - show ipv6 route summary
+        - show ipv6 route static
+    ldp:
+      parse:
+        - show mpls interfaces
+        - show mpls ldp neighbor
+        # Discovery separates a link hello from a targeted one, which is the
+        # difference between a solid and a dotted line on the LDP diagram.
+        - show mpls ldp discovery
+    bfd:
+      parse:
+        # `details` is the form that names the registered protocols, the
+        # timers and the state per session; the brief table has no parser.
+        - show bfd neighbors details
+    sr:
+      parse:
+        - show segment-routing mpls state
+        - show segment-routing mpls connected-prefix-sid-map ipv4
+    # SRv6 is a separate reading from `sr` above, not a variant of it: that one
+    # is SR-MPLS — an SRGB and labels — and this is locators and SIDs in the
+    # IPv6 data plane. A network can run either, both or neither.
+    srv6:
+      parse:
+        # The locators configured on this device, which is what says SRv6 is
+        # enabled here at all rather than merely supported by the image.
+        # The SID table and the SRv6 manager are not asked for: nothing reads
+        # them yet, and a command no reader takes only puts a gap in the
+        # document wherever Genie has no parser for it. They come back with
+        # the reader that describes each SID and its behaviour.
+        - show segment-routing srv6 locator
+    # Multicast is ONE selection covering both readings, because in practice
+    # they are one question. A network that runs PIM in the global table and a
+    # network that runs MVPN over it are the same network, documented together
+    # or not at all: the default MDT group is what carries a customer's
+    # multicast across the same core the global-table PIM adjacencies are
+    # formed over, and describing one without the other produces a document
+    # that explains half a path.
+    #
+    # Several of these have no Genie parser on IOS-XE and come back `unparsed`.
+    # That is not a gap: the raw text is captured, redacted, and stored in the
+    # estate database exactly as parsed state is, and the readers take it from
+    # there. A command no reader takes would be one, which is why the PIM
+    # interface list and the IGMP groups are not asked for: they come back
+    # with a reader of their own.
+    multicast:
+      parse:
+        # The global table: who the PIM neighbours are, and which RP the device
+        # maps a group to. An interface with a PIM neighbour is a
+        # multicast-capable link, and that is the multicast equivalent of the
+        # IGP adjacency the topology is built from.
+        - show ip pim neighbor
+        - show ip pim rp mapping
+        # The IPv6 side of the same question: PIM neighbours over IPv6 and
+        # the MLD memberships, read from the text.
+        - show ipv6 pim neighbor
+        - show ipv6 mld groups
+        # The forwarding state itself — the (S,G) and (*,G) entries and their
+        # incoming and outgoing interfaces. This is what says traffic is
+        # actually being forwarded rather than merely signalled.
+        - show ip mroute
+        # Multicast VPN. `mdt` names the default and data MDT groups per VRF,
+        # which is the tunnel a customer's multicast rides across the core;
+        # `mdt bgp` names the PE that each MDT group was learned from, which is
+        # what turns a list of groups into a picture of who talks to whom.
+        - show ip pim mdt
+        - show ip pim mdt bgp
+        # BGP-signalled MVPN, for the profiles that use it rather than PIM in
+        # the core. A device running a PIM-signalled profile answers this with
+        # nothing, which is itself the fact that tells the two apart.
+        - show bgp ipv4 mvpn all summary
+        # The MVPN routes themselves. The type 1 routes are the auto-discovery:
+        # one per PE per VPN, which is how a PE learns who else carries the
+        # VPN's multicast, and so the only place the membership of a
+        # BGP-AD profile (3, 9, 11 to 15) is stated. Type 3 announces a data
+        # or partitioned tree, types 6 and 7 are the customer joins where
+        # C-multicast signalling is BGP.
+        - show bgp ipv4 mvpn all
+        # The mLDP trees: root, opaque value and downstream clients per LSM.
+        # The opaque value names what the tree is for — `[mdt RD N]` for a
+        # default (0), data or partitioned MDT, `[ipv4 S G]` or `[vpnv4 RD S G]`
+        # for in-band signalling (profiles 6 and 7) — so this one output says
+        # which profile the data plane is actually running, whatever the
+        # configuration intends.
+        - show mpls mldp database
+    ptp:
+      parse:
+        # This one carries the whole IOS-XE reading: the clock state in its
+        # header, the clock-port in the slave role under PORT SUMMARY, and
+        # that port's peer address under SESSION INFORMATION. The address is
+        # what resolves to a neighbouring router — a loopback here, by
+        # recommended design.
+        #
+        # The domain number is lab-specific and deliberately literal: a
+        # different domain means editing this line, not passing a value
+        # through the tool, so the allowlist stays a list of exact strings.
+        - show ptp clock running domain 44
+        # Steps removed from the grandmaster, and the offset from it.
+        - show ptp clock dataset current
+        # The parent dataset names the clock this device follows and the
+        # default dataset names the clock it is. Matching one against the
+        # other settles which session is the source where a clock-port holds
+        # more than one, and identifies the grandmaster of the domain.
+        - show ptp clock dataset parent
+        - show ptp clock dataset default
+    lag:
+      parse:
+        - show etherchannel summary
+    l3vpn:
+      parse:
+        - show vrf detail
+    l2vpn:
+      parse:
+        - show mpls l2transport vc detail
+        - show l2vpn service all
+    evpn:
+      parse:
+        # The control plane: every L2VPN EVPN session. The data plane: the
+        # VTEPs this one has tunnels to, and the VNIs it serves.
+        - show bgp l2vpn evpn summary
+        - show nve peers
+        - show nve vni
+    mplste:
+      parse:
+        - show mpls traffic-eng tunnels
+    # Read separately from `mplste` above for the same reason SRv6 is read
+    # separately from SR-MPLS: an RSVP-TE tunnel and an SR-TE policy are
+    # different objects, signalled differently, and an estate migrating from
+    # one to the other runs both at once.
+    srte:
+      parse:
+        # IOS-XE spells the all-policies form with an explicit `all`; the
+        # bare form takes a policy name and renders nothing from an
+        # allowlist that holds exact strings.
+        - show segment-routing traffic-eng policy all
+    qos:
+      parse:
+        # Which service policy is attached to which interface, and in which
+        # direction. The running configuration already on disk is the primary
+        # reading — it is the same on both platforms and it is what "a policy
+        # is applied" actually means — and this corroborates it with the
+        # device's own operational view of the attachment.
+        - show policy-map interface
+        # The policies themselves: classes and what each one does. This is what
+        # lets the document describe a policy rather than only name it.
+        - show policy-map
+    # The management plane is read from the running configuration already
+    # captured above; these are the two states the configuration cannot
+    # give: whether the clock is synchronised and to whom, and what the
+    # control-plane policy has conformed and dropped.
+    management:
+      parse:
+        - show ntp associations
+        - show policy-map control-plane
+    # The access layer under a router: what a switch knows that a router does
+    # not. VLANs and the ports in each; each port's mode, access VLAN, native
+    # VLAN and allowed list, from both the per-port and the trunk views because
+    # only the trunk view says which VLANs are actually forwarding; the
+    # spanning tree per VLAN or instance with the root, the bridge and each
+    # port's role, and the detail form because it alone prints the designated
+    # bridge on every port — the far switch's bridge ID, which proves a link
+    # between two collected switches with LLDP switched off; and the MAC
+    # table, which places the router's ARP entries on access ports. A MAC
+    # table is a moment: the document says so.
+    switching:
+      parse:
+        - show vlan
+        - show interfaces switchport
+        - show interfaces trunk
+        - show spanning-tree
+        - show spanning-tree detail
+        # Only the MST configuration says which VLANs each instance carries;
+        # without it a VLAN's root under several instances is unknown.
+        - show spanning-tree mst configuration
+        - show mac address-table
+  probe:
+    - ping {addr}
+
+# Classic IOS: the Catalyst access layer and the older ISRs. The commands
+# are IOS-XE's, spelled the same and answered the same; Genie's `ios`
+# parsers inherit the IOS-XE ones. The block is kept whole rather than
+# referenced so that the allowlist stays a list an auditor reads top to
+# bottom, and so a command that IOS turns out not to answer can be removed
+# here without touching IOS-XE.
+ios:
+  parse:
+    - show version
+    - show inventory
+    # Chassis model and what is installed in it. `show inventory` names the
+    # parts; `show platform` says which slot each one is in and whether it is
+    # up, which is what a hardware table is actually asked for.
+    - show platform
+    - show cdp neighbors detail
+    - show lldp neighbors detail
+    - show ip interface brief
+    # Full form as well as brief: only this one carries the prefix length,
+    # which is what turns an address list into subnets for the Layer 3
+    # addressing table and for point-to-point adjacency.
+    - show ip interface
+    - show ipv6 interface
+    # Genie's IOS-XE parser for the full form above requires every interface to
+    # carry an IPv6 address, so one interface without one loses the whole
+    # device's IPv6 addressing. The brief form has no mask but survives it.
+    - show ipv6 interface brief
+    - show interfaces description
+    # The interface table, for the MAC each port answers with: what a
+    # switch's MAC table calls this router, which places the router on a
+    # switch port without a neighbour protocol and without any address.
+    - show interfaces
+    # ARP and IPv6 neighbour tables: an entry whose address belongs to another
+    # collected interface is direct evidence of an adjacency, independent of
+    # CDP and LLDP. The global table only; each VRF's is read under per_vrf.
+    - show ip arp
+    - show ipv6 neighbors
+  raw_only:
+    - show running-config
+  per_vrf:
+    - show ip arp vrf {vrf}
+  features:
+    ospf:
+      parse:
+        - show ip ospf neighbor
+        # Every OSPF-enabled interface, adjacency or not. This is what tells an
+        # interface that is configured and quiet from one that is not
+        # configured at all, which the infrastructure addressing table has to
+        # distinguish.
+        - show ip ospf interface brief
+        # OSPFv3, asked alongside OSPFv2 because "does this network route
+        # IPv6" is answered protocol by protocol, not by a separate IPv6
+        # selection. Both are read from the text: the neighbour table and
+        # the interfaces OSPFv3 runs on. An IOS-XE process carries an
+        # address family per instance, and the header names it.
+        - show ospfv3 neighbor
+        - show ospfv3 interface brief
+    isis:
+      parse:
+        - show isis neighbors
+        # Every interface, each saying whether IS-IS is its routing protocol:
+        # on IOS and IOS-XE, IS-IS rides CLNS and this is where the interfaces
+        # it runs on are listed. Read from the text. `show isis interface
+        # brief` is the IOS-XR command — Genie parses it for IOS-XR alone —
+        # and asked here it left an estate's IOS-XE routers out of every
+        # table built on IGP interfaces.
+        - show clns interface
+        # The detail form names each neighbour's IPv4 and IPv6 addresses and
+        # the topologies the adjacency carries, which is where "IS-IS carries
+        # IPv6 here" is stated; the summary form above does not say.
+        - show isis neighbors detail
+    lsdb:
+      parse:
+        # The link-state databases, read from the text. One router holds the
+        # whole area or level, so this is where the routers DiscoNet never
+        # reached are named: IS-IS with their hostnames, OSPF by router ID.
+        - show isis database detail
+        - show ip ospf database router
+        - show ip ospf database network
+    bgp:
+      parse:
+        # One command per address family, because "BGP is running" and "this
+        # address family is activated" are different statements and only a
+        # per-family summary tells them apart. A family whose command comes
+        # back empty is not activated; one whose command was never sent is
+        # not collected, and the document says which.
+        - show ip bgp summary
+        - show bgp ipv6 unicast summary
+    vpnv4:
+      parse:
+        - show bgp vpnv4 unicast all summary
+        - show bgp vpnv6 unicast all summary
+    routing:
+      parse:
+        # Never the whole table: the summary says how many routes each
+        # source supplies, and the static and connected routes are the
+        # bounded parts of it. The VRF tables are not summarised here — a
+        # per-VRF command would have to be rendered, and the allowlist holds
+        # literals only.
+        - show ip route summary
+        - show ip route static
+        - show ip route connected
+        - show ipv6 route summary
+        - show ipv6 route static
+    ldp:
+      parse:
+        - show mpls interfaces
+        - show mpls ldp neighbor
+        # Discovery separates a link hello from a targeted one, which is the
+        # difference between a solid and a dotted line on the LDP diagram.
+        - show mpls ldp discovery
+    bfd:
+      parse:
+        # `details` is the form that names the registered protocols, the
+        # timers and the state per session; the brief table has no parser.
+        - show bfd neighbors details
+    sr:
+      parse:
+        - show segment-routing mpls state
+        - show segment-routing mpls connected-prefix-sid-map ipv4
+    # SRv6 is a separate reading from `sr` above, not a variant of it: that one
+    # is SR-MPLS — an SRGB and labels — and this is locators and SIDs in the
+    # IPv6 data plane. A network can run either, both or neither.
+    srv6:
+      parse:
+        # The locators configured on this device, which is what says SRv6 is
+        # enabled here at all rather than merely supported by the image.
+        # The SID table and the SRv6 manager are not asked for: nothing reads
+        # them yet, and a command no reader takes only puts a gap in the
+        # document wherever Genie has no parser for it. They come back with
+        # the reader that describes each SID and its behaviour.
+        - show segment-routing srv6 locator
+    # Multicast is ONE selection covering both readings, because in practice
+    # they are one question. A network that runs PIM in the global table and a
+    # network that runs MVPN over it are the same network, documented together
+    # or not at all: the default MDT group is what carries a customer's
+    # multicast across the same core the global-table PIM adjacencies are
+    # formed over, and describing one without the other produces a document
+    # that explains half a path.
+    #
+    # Several of these have no Genie parser on IOS-XE and come back `unparsed`.
+    # That is not a gap: the raw text is captured, redacted, and stored in the
+    # estate database exactly as parsed state is, and the readers take it from
+    # there. A command no reader takes would be one, which is why the PIM
+    # interface list and the IGMP groups are not asked for: they come back
+    # with a reader of their own.
+    multicast:
+      parse:
+        # The global table: who the PIM neighbours are, and which RP the device
+        # maps a group to. An interface with a PIM neighbour is a
+        # multicast-capable link, and that is the multicast equivalent of the
+        # IGP adjacency the topology is built from.
+        - show ip pim neighbor
+        - show ip pim rp mapping
+        # The IPv6 side of the same question: PIM neighbours over IPv6 and
+        # the MLD memberships, read from the text.
+        - show ipv6 pim neighbor
+        - show ipv6 mld groups
+        # The forwarding state itself — the (S,G) and (*,G) entries and their
+        # incoming and outgoing interfaces. This is what says traffic is
+        # actually being forwarded rather than merely signalled.
+        - show ip mroute
+        # Multicast VPN. `mdt` names the default and data MDT groups per VRF,
+        # which is the tunnel a customer's multicast rides across the core;
+        # `mdt bgp` names the PE that each MDT group was learned from, which is
+        # what turns a list of groups into a picture of who talks to whom.
+        - show ip pim mdt
+        - show ip pim mdt bgp
+        # BGP-signalled MVPN, for the profiles that use it rather than PIM in
+        # the core. A device running a PIM-signalled profile answers this with
+        # nothing, which is itself the fact that tells the two apart.
+        - show bgp ipv4 mvpn all summary
+        # The MVPN routes themselves. The type 1 routes are the auto-discovery:
+        # one per PE per VPN, which is how a PE learns who else carries the
+        # VPN's multicast, and so the only place the membership of a
+        # BGP-AD profile (3, 9, 11 to 15) is stated. Type 3 announces a data
+        # or partitioned tree, types 6 and 7 are the customer joins where
+        # C-multicast signalling is BGP.
+        - show bgp ipv4 mvpn all
+        # The mLDP trees: root, opaque value and downstream clients per LSM.
+        # The opaque value names what the tree is for — `[mdt RD N]` for a
+        # default (0), data or partitioned MDT, `[ipv4 S G]` or `[vpnv4 RD S G]`
+        # for in-band signalling (profiles 6 and 7) — so this one output says
+        # which profile the data plane is actually running, whatever the
+        # configuration intends.
+        - show mpls mldp database
+    ptp:
+      parse:
+        # This one carries the whole IOS-XE reading: the clock state in its
+        # header, the clock-port in the slave role under PORT SUMMARY, and
+        # that port's peer address under SESSION INFORMATION. The address is
+        # what resolves to a neighbouring router — a loopback here, by
+        # recommended design.
+        #
+        # The domain number is lab-specific and deliberately literal: a
+        # different domain means editing this line, not passing a value
+        # through the tool, so the allowlist stays a list of exact strings.
+        - show ptp clock running domain 44
+        # Steps removed from the grandmaster, and the offset from it.
+        - show ptp clock dataset current
+        # The parent dataset names the clock this device follows and the
+        # default dataset names the clock it is. Matching one against the
+        # other settles which session is the source where a clock-port holds
+        # more than one, and identifies the grandmaster of the domain.
+        - show ptp clock dataset parent
+        - show ptp clock dataset default
+    lag:
+      parse:
+        - show etherchannel summary
+    l3vpn:
+      parse:
+        - show vrf detail
+    l2vpn:
+      parse:
+        - show mpls l2transport vc detail
+        - show l2vpn service all
+    evpn:
+      parse:
+        # The control plane: every L2VPN EVPN session. The data plane: the
+        # VTEPs this one has tunnels to, and the VNIs it serves.
+        - show bgp l2vpn evpn summary
+        - show nve peers
+        - show nve vni
+    mplste:
+      parse:
+        - show mpls traffic-eng tunnels
+    # Read separately from `mplste` above for the same reason SRv6 is read
+    # separately from SR-MPLS: an RSVP-TE tunnel and an SR-TE policy are
+    # different objects, signalled differently, and an estate migrating from
+    # one to the other runs both at once.
+    srte:
+      parse:
+        # IOS-XE spells the all-policies form with an explicit `all`; the
+        # bare form takes a policy name and renders nothing from an
+        # allowlist that holds exact strings.
+        - show segment-routing traffic-eng policy all
+    qos:
+      parse:
+        # Which service policy is attached to which interface, and in which
+        # direction. The running configuration already on disk is the primary
+        # reading — it is the same on both platforms and it is what "a policy
+        # is applied" actually means — and this corroborates it with the
+        # device's own operational view of the attachment.
+        - show policy-map interface
+        # The policies themselves: classes and what each one does. This is what
+        # lets the document describe a policy rather than only name it.
+        - show policy-map
+    # The management plane is read from the running configuration already
+    # captured above; these are the two states the configuration cannot
+    # give: whether the clock is synchronised and to whom, and what the
+    # control-plane policy has conformed and dropped.
+    management:
+      parse:
+        - show ntp associations
+        - show policy-map control-plane
+    # The access layer under a router: what a switch knows that a router does
+    # not. VLANs and the ports in each; each port's mode, access VLAN, native
+    # VLAN and allowed list, from both the per-port and the trunk views because
+    # only the trunk view says which VLANs are actually forwarding; the
+    # spanning tree per VLAN or instance with the root, the bridge and each
+    # port's role, and the detail form because it alone prints the designated
+    # bridge on every port — the far switch's bridge ID, which proves a link
+    # between two collected switches with LLDP switched off; and the MAC
+    # table, which places the router's ARP entries on access ports. A MAC
+    # table is a moment: the document says so.
+    switching:
+      parse:
+        - show vlan
+        - show interfaces switchport
+        - show interfaces trunk
+        - show spanning-tree
+        - show spanning-tree detail
+        # Only the MST configuration says which VLANs each instance carries;
+        # without it a VLAN's root under several instances is unknown.
+        - show spanning-tree mst configuration
+        - show mac address-table
+  probe:
+    - ping {addr}
+
+iosxr:
+  parse:
+    - show version
+    - show inventory
+    - show platform
+    - show cdp neighbors detail
+    - show lldp neighbors detail
+    - show ipv4 interface brief
+    # `show ipv4 vrf all interface` is the IOS-XR equivalent of IOS-XE's
+    # `show ip interface`: the brief form omits the prefix length, and the
+    # `vrf all` form is also what carries VRF interface addressing.
+    - show ipv4 vrf all interface
+    # The same for IPv6: without `vrf all` a 6VPE interface's address is
+    # never read. The plain form stays as the reading where the `vrf all`
+    # one does not parse, and is what a snapshot taken before carries.
+    - show ipv6 vrf all interface
+    - show ipv6 interface
+    # The interface table, for the MAC each port answers with; see IOS-XE.
+    - show interfaces
+    # The global ARP table; each VRF's is read under per_vrf.
+    - show arp detail
+    - show ipv6 neighbors
+  raw_only:
+    - show running-config
+  per_vrf:
+    - show arp vrf {vrf} detail
+  features:
+    ospf:
+      parse:
+        - show ospf neighbor
+        - show ospf interface brief
+        # OSPFv3 beside OSPFv2; see the IOS-XE note.
+        - show ospfv3 neighbor
+        - show ospfv3 interface brief
+    isis:
+      parse:
+        - show isis adjacency
+        - show isis neighbors
+        - show isis interface brief
+        # Per adjacency: the neighbour's IPv4 and IPv6 addresses and the
+        # topologies it carries, which is where IS-IS's IPv6 is stated.
+        - show isis adjacency detail
+    lsdb:
+      parse:
+        # The link-state databases; see the IOS-XE note.
+        - show isis database detail
+        - show ospf database router
+        - show ospf database network
+    bgp:
+      parse:
+        # `show bgp summary` with no address family is IPv4 unicast on XR.
+        - show bgp summary
+        - show bgp ipv6 unicast summary
+    vpnv4:
+      parse:
+        - show bgp vpnv4 unicast summary
+        - show bgp vpnv6 unicast summary
+    routing:
+      parse:
+        # The default VRF's tables; see the IOS-XE note.
+        - show route summary
+        - show route ipv4 static
+        - show route ipv4 connected
+        - show route ipv6 static
+    ldp:
+      parse:
+        - show mpls interfaces
+        - show mpls ldp neighbor
+        - show mpls ldp discovery
+    bfd:
+      parse:
+        - show bfd session
+    sr:
+      parse:
+        - show segment-routing local-block
+        - show isis segment-routing label table
+    # See the note on the IOS-XE side: SRv6 is a separate reading from
+    # SR-MPLS, not a variant of it, and only its locators have a reader yet.
+    srv6:
+      parse:
+        - show segment-routing srv6 locator
+    # See the note on the IOS-XE side: one selection, both readings, because
+    # the global table and the MVPN overlay are one question.
+    multicast:
+      parse:
+        # IOS-XR drops the `ip` and keeps the rest: `show pim neighbor` rather
+        # than `show ip pim neighbor`. The reading is the same one.
+        - show pim neighbor
+        # The IPv6 side: PIM neighbours over IPv6 and MLD memberships.
+        - show pim ipv6 neighbor
+        - show mld groups
+        # XR states RP-to-group mapping as a group map rather than an RP
+        # mapping, and it includes the auto-configured ranges — which is what
+        # distinguishes a configured RP from a default.
+        - show pim group-map
+        # MRIB rather than mroute. The summary is taken as well as the table
+        # because a core router's full multicast table is large and the counts
+        # are what a document actually quotes.
+        - show mrib route summary
+        - show mrib route
+        # Multicast VPN, per VRF. `vrf all` is the only form that answers for
+        # every VRF at once, and the allowlist holds exact strings, so it is
+        # written out rather than templated per VRF.
+        - show pim vrf all mdt cache
+        - show pim vrf all neighbor
+        - show bgp ipv4 mvpn summary
+        # See the IOS-XE side: the type 1 routes are the membership of every
+        # BGP-AD profile, and the mLDP database is the data plane as built.
+        - show bgp ipv4 mvpn
+        - show mpls mldp database
+    ptp:
+      parse:
+        # The servo's device status is IOS-XR's statement about its own clock,
+        # and it gates everything below: a device in FREERUN is following
+        # nothing, whatever masters it can still hear.
+        - show ptp platform servo
+        # Every clock heard, per receiving interface, with the steps removed
+        # that decides which of them the device follows. IOS-XR synchronises
+        # over physical interface addresses rather than loopbacks, so this is
+        # where the neighbouring router's address comes from.
+        #
+        # Both spellings are listed because the two are not consistent across
+        # XR releases. A platform that has neither answers `unsupported`,
+        # which is reported once rather than treated as a failure — and means
+        # the device does not participate in PTP.
+        - show ptp foreign masters
+        - show ptp foreign-masters
+        - show ptp advertised-clock
+    lag:
+      parse:
+        # Members, state and the effective bandwidth of every bundle.
+        - show bundle
+    l3vpn:
+      parse:
+        - show vrf all detail
+    l2vpn:
+      parse:
+        - show l2vpn xconnect detail
+        - show l2vpn bridge-domain
+    evpn:
+      parse:
+        # IOS-XR has no VXLAN; its EVPN is the control plane over MPLS, and
+        # the EVIs are the instances it serves.
+        - show bgp l2vpn evpn summary
+        - show evpn evi
+    mplste:
+      parse:
+        - show mpls traffic-eng tunnels
+    # See the note on the IOS-XE side: an RSVP-TE tunnel and an SR-TE policy
+    # are different objects, and an estate mid-migration runs both.
+    srte:
+      parse:
+        # The policies themselves: colour, endpoint, and which candidate path
+        # is active.
+        - show segment-routing traffic-eng policy
+        # What is actually programmed, as against what is configured. A policy
+        # that is up in one and absent from the other is a real finding.
+        - show segment-routing traffic-eng forwarding policy
+    qos:
+      parse:
+        # IOS-XR has no per-interface form that takes no argument, and the
+        # allowlist renders nothing. `targets` lists every policy-map with the
+        # interfaces and directions it is attached to, which is the same fact
+        # from the other end.
+        - show policy-map targets
+        - show policy-map
+    management:
+      parse:
+        # The configuration carries the rest; LPTS has no summary Genie parses.
+        - show ntp associations
+  probe:
+    - ping {addr}
+
+# NX-OS. The data-centre reading: every interface command is `vrf all`, the
+# module table stands in for `show platform`, and the overlay and the vPC
+# domain are what the aggregation and EVPN features read.
+nxos:
+  parse:
+    - show version
+    - show inventory
+    # NX-OS has no `show platform`; the module table is what says which
+    # slot holds what and whether it is up.
+    - show module
+    - show cdp neighbors detail
+    - show lldp neighbors detail
+    # `vrf all` on every interface command: a VRF-aware switch lists only
+    # the default VRF without it, and a data-centre switch keeps most of
+    # its addressed interfaces in VRFs.
+    - show ip interface brief vrf all
+    - show ip interface vrf all
+    - show ipv6 interface vrf all
+    - show interface description
+    # The interface table, for the MAC each port answers with; see IOS-XE.
+    - show interface
+    # The ARP and IPv6 neighbour tables, all VRFs. `detail` is the form
+    # Genie parses into the same shape as the IOS-XE table.
+    - show ip arp detail vrf all
+    - show ipv6 neighbor detail vrf all
+  raw_only:
+    - show running-config
+  features:
+    ospf:
+      parse:
+        # `detail` is the only neighbour form Genie parses on NX-OS. It
+        # nests the neighbours under VRF, family, instance, area and
+        # interface, and the reader walks down to them.
+        - show ip ospf neighbors detail vrf all
+        - show ip ospf interface vrf all
+        # OSPFv3 beside OSPFv2, every VRF; read from the text.
+        - show ospfv3 neighbors vrf all
+        - show ospfv3 interface brief vrf all
+    isis:
+      parse:
+        - show isis adjacency vrf all
+        - show isis interface vrf all
+        # Each neighbour's IPv4 and IPv6 addresses and topologies.
+        - show isis adjacency detail vrf all
+    lsdb:
+      parse:
+        # The link-state databases, every VRF; see the IOS-XE note.
+        - show isis database detail vrf all
+        - show ip ospf database router detail vrf all
+        - show ip ospf database network detail vrf all
+    bgp:
+      parse:
+        # One summary, every VRF and every address family. Which family a
+        # session belongs to is read off the VRF and family it sits under,
+        # in the same vocabulary the Junos summary is read in.
+        - show bgp vrf all all summary
+    vpnv4:
+      parse:
+        # The same command: VPNv4 is the `vpnv4 unicast` family in the
+        # default VRF plus the `ipv4 unicast` sessions inside each VRF.
+        - show bgp vrf all all summary
+    routing:
+      parse:
+        # `vrf all`: every VRF's summary and statics from one command each.
+        # `direct` is what NX-OS calls a connected route.
+        - show ip route summary vrf all
+        - show ip static-route vrf all
+        - show ip route direct vrf all
+        - show ipv6 route summary vrf all
+        - show ipv6 static-route vrf all
+    bfd:
+      parse:
+        # Singular: `show bfd neighbors` is the IOS-XE spelling and NX-OS
+        # answers only the singular one.
+        - show bfd neighbor
+    lag:
+      parse:
+        # Port-channels and their members, and the vPC domain: two switches
+        # presenting one port-channel to a neighbour.
+        - show port-channel summary
+        - show vpc
+    l3vpn:
+      parse:
+        # Name, RD and state per VRF. Route targets are not in it: they are
+        # read from the `vrf context` stanzas of the running configuration,
+        # and membership from the interface table below.
+        - show vrf all detail
+        - show vrf all interface
+    evpn:
+      parse:
+        - show bgp l2vpn evpn summary
+        - show nve peers
+        - show nve vni
+    management:
+      parse:
+        # `peer-status` is the NX-OS spelling of the associations table.
+        - show ntp peer-status
+    # The access layer, as on IOS-XE. The switchport view carries the allowed
+    # list and the native VLAN; only the trunk view says which of the allowed
+    # VLANs the spanning tree forwards on each trunk now, the one proof that a
+    # trunk carries a VLAN. Genie has no NX-OS parser for `show interface
+    # trunk`, nor for the bare spanning-tree table, and both are read from the
+    # text.
+    switching:
+      parse:
+        - show vlan
+        - show interface switchport
+        - show interface trunk
+        - show spanning-tree
+        - show spanning-tree detail
+        # Only the MST configuration says which VLANs each instance carries;
+        # without it a VLAN's root under several instances is unknown.
+        - show spanning-tree mst configuration
+        - show mac address-table
+  probe:
+    - ping {addr}
+
+# Junos. The same reading as the two Cisco platforms wherever Junos states the
+# same fact, under the name Junos gives it. What is absent here is absent on
+# purpose for now: SR, SRv6, multicast, PTP, L2VPN, MPLS TE, SR-TE and QoS
+# have no Junos commands yet, so on a Junos device those features are
+# `[NOT COLLECTED]` per device rather than misread. Add them when their
+# reading exists.
+junos:
+  parse:
+    - show version
+    - show chassis hardware
+    # Junos has no CDP. The brief LLDP table carries the neighbour's system
+    # name, its port ID and its port description; the description is what
+    # names the far interface where the port ID is the numeric ifIndex Junos
+    # advertises by default.
+    - show lldp neighbors
+    # Addresses sit on the logical unit under `protocol inet`/`inet6`, with
+    # the prefix length, and the same output carries admin and link state.
+    - show interfaces terse
+    - show interfaces descriptions
+    # The full interface table, for the MAC each physical interface answers
+    # with (`Current address`); see IOS-XE. Every logical unit shares it.
+    - show interfaces
+    # ARP and IPv6 neighbour tables, as on the Cisco side: an entry whose
+    # address belongs to another collected interface is evidence of an
+    # adjacency independent of LLDP. `no-resolve` keeps the output to
+    # addresses and stops the device doing a DNS lookup per entry.
+    - show arp no-resolve
+    - show ipv6 neighbors
+  raw_only:
+    # Redacted like every raw output: `encrypted-password`, `authentication-key`
+    # and `pre-shared-key` lines lose their value before the file is written.
+    - show configuration
+  features:
+    ospf:
+      parse:
+        - show ospf neighbor
+        - show ospf interface
+        # OSPFv3 beside OSPFv2; Junos spells it `ospf3`. Read from the text.
+        - show ospf3 neighbor
+        - show ospf3 interface
+    isis:
+      parse:
+        - show isis adjacency
+        - show isis interface
+        # Each neighbour's IP and IPv6 addresses and the topologies carried.
+        - show isis adjacency detail
+    lsdb:
+      parse:
+        # The link-state databases; `extensive` is the form that lists each
+        # LSP's neighbours and prefixes and each LSA's links.
+        - show isis database extensive
+        - show ospf database router extensive
+        - show ospf database network extensive
+    bgp:
+      parse:
+        # One summary carries every address family, one RIB row per family
+        # under each peer: inet.0, inet6.0, bgp.l3vpn.0, bgp.l3vpn-inet6.0.
+        - show bgp summary
+    vpnv4:
+      parse:
+        # The same command: the VPNv4 reading is the bgp.l3vpn.0 rows of it.
+        # Listed under both features because either selection needs it, and
+        # a command in two groups is sent once.
+        - show bgp summary
+    routing:
+      parse:
+        # One summary carries every table, inet.0 and inet6.0 and each
+        # VRF's own; the statics and directs come out per protocol.
+        - show route summary
+        - show route protocol static
+        - show route protocol direct
+    ldp:
+      parse:
+        # `neighbor` is the discovery — hello adjacencies, with the interface
+        # they were heard on, `lo0.0` for a targeted one. `session` is the
+        # session state per peer.
+        - show ldp neighbor
+        - show ldp session
+        - show mpls interface
+    bfd:
+      parse:
+        - show bfd session
+    l3vpn:
+      parse:
+        # Instance type, RD, the interfaces in it and the route targets it
+        # imports and exports, per routing instance.
+        - show route instance detail
+        # A VRF configured with `vrf-import`/`vrf-export` policies rather
+        # than `vrf-target` names its policies here, not its targets. The
+        # policies name communities, and the communities carry the
+        # `target:AS:N` members: that is where the route target is read from,
+        # so VPNs on such an estate still match by target rather than by name.
+        # Configuration, so redacted like the rest; it carries no secrets
+        # of its own.
+        - show configuration policy-options
+    l2vpn:
+      parse:
+        # The three Junos Layer 2 VPN readings: LDP-signalled pseudowires
+        # (l2circuit), BGP-signalled ones (l2vpn) and VPLS. None has a
+        # parser; all three print the remote PE, the state and the local
+        # interface per connection and are read from the text.
+        - show l2circuit connections
+        - show l2vpn connections
+        - show vpls connections
+    evpn:
+      parse:
+        # The one summary already carries the bgp.evpn.0 sessions; listed
+        # here so selecting EVPN alone still sends it. Junos has no parser
+        # for its VXLAN tunnel table, so the data plane is not read yet.
+        - show bgp summary
+    security:
+      parse:
+        # SRX only. An MX answers both with a syntax error, which comes back
+        # as text (unicon's Junos settings carry no error pattern) and names
+        # no cluster; a standalone SRX answers that its cluster is not
+        # enabled, which is how it is known for a firewall. Neither has a
+        # parser: both are read from the text.
+        - show chassis cluster status
+        - show security zones
+    management:
+      parse:
+        - show ntp associations
+    # The access layer on an EX or a QFX. None of these has a parser; all are
+    # read from the text. `interface` in the singular is accepted by both the
+    # ELS and the older CLI, which spell the plural differently. The
+    # spanning-tree interface table prints the designated bridge ID per port,
+    # the same evidence the Cisco detail form gives.
+    switching:
+      parse:
+        - show vlans
+        - show ethernet-switching interface
+        - show ethernet-switching table
+        - show spanning-tree bridge
+        - show spanning-tree interface
+  # No probe. The one template the probe policy allows is `ping {addr}`,
+  # and on Junos that runs until interrupted, so every probe would sit on
+  # the command timeout. Reachability verification does nothing on a
+  # Junos device, and the manifest records that no probe was sent.
+
+# Cisco ASA. A firewall is a node like any other, read in its own vocabulary:
+# no CDP and no LLDP, so its links are proved by ARP (keyed by nameif) and
+# by shared addressing; a failover pair is two chassis that each print the
+# other's serial; a context is a virtual firewall inside the chassis.
+asa:
+  parse:
+    - show version
+    - show inventory
+    # The one interface table with the mask (as a dotted subnet), the nameif
+    # and the link state together. `show interface ip brief` has no mask.
+    - show interface detail
+    # Name and security level per interface.
+    - show nameif
+    - show arp
+    # No parser on this platform; kept as text.
+    - show ipv6 neighbor
+  raw_only:
+    - show running-config
+  features:
+    routing:
+      parse:
+        # The same three bounded forms as everywhere else, spelt without
+        # `ip`. None has a parser on ASA; all three are read from the text.
+        # Never `show route` on its own: a firewall at an edge can carry a
+        # full feed like any router.
+        - show route summary
+        - show route static
+        - show route connected
+    security:
+      parse:
+        - show failover
+        - show context
+        - show vpn-sessiondb summary
+  probe:
+    - ping {addr}

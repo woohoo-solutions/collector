@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.env
+# A collection is a customer's network: never commit one.
+snapshots/
+*.export.tar.gz
+*.export.tar.gz.age
+*.export.tar.gz.gpg
+known_hosts

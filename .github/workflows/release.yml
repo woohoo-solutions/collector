@@ -1,0 +1,82 @@
+# Publish to PyPI when a version tag (v0.2.0) is pushed, by Trusted
+# Publishing: PyPI trusts this workflow, in this repository and in the "pypi"
+# environment, and hands it a short-lived token. No token is stored anywhere.
+#
+# One-time setup:
+# * pypi.org, Account settings, Publishing, "Add a new pending publisher":
+#   project disconet-collector, owner woohoo-solutions, repository collector,
+#   workflow release.yml, environment pypi.
+# * GitHub, Settings, Environments, New environment "pypi". A required
+#   reviewer there makes every publish wait for a click.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: The tag names the package's version
+        run: python tools/check_wheel.py --tag "${GITHUB_REF_NAME}"
+
+      - name: Build and check
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check --strict dist/*
+          python tools/check_wheel.py dist/*.whl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install at the locked versions and run the offline suite
+        run: |
+          python -m pip install --upgrade pip
+          # The exact set the suite was last passed on (tools/lock_dependencies.sh).
+          python -m pip install -c constraints/py${{ matrix.python-version }}.txt -e .
+          python -m unittest discover -s tests -t .
+
+  publish:
+    needs: [build, test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/disconet-collector/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

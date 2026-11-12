@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "disconet-collector"
+dynamic = ["version"]
+description = "Read-only collection of network device state: show commands from one allowlist, redacted at source, exported with a hash per file"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "WooHoo OÜ", email = "info@woohoo-solutions.com" }]
+keywords = ["network", "pyats", "read-only", "collector", "snapshot", "cisco", "junos"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Telecommunications Industry",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Networking",
+]
+# Each range starts at the release the suite last passed on and stops before
+# the next one that may break it, as DiscoNet's do; a project installing the
+# Collector beside its own dependencies can still resolve them. The exact set
+# CI installs is pinned per Python in constraints/ (tools/lock_dependencies.sh).
+dependencies = [
+    # SSH sessions and the Genie parsers. pyATS, Genie and unicon release
+    # together each month as YY.MM, and the read-only connect
+    # (netstate.collector QUIET_CONNECT_ARGUMENTS and an empty
+    # SESSION_CONFIG_SETUP) rests on unicon plugin internals, so the range is
+    # the one line it was checked on. Imported only inside the functions that
+    # log in and parse, so `verify` runs without them.
+    "pyats[full]>=26.10,<26.11",
+    "genie>=26.10,<26.11",
+    "unicon>=26.10,<26.11",
+    # The allowlist and the testbed. Imported at module top.
+    "pyyaml>=6.0.3,<7",
+    # The opt-in Ed25519 signature of `export --sign` and its check in
+    # `verify`; imported only inside those functions.
+    "cryptography>=50.0.2,<51",
+    # The ssh client for the devices OpenSSH refuses outright, an RSA host
+    # key under 1024 bits (netstate.legacyssh, `disconet-ssh`). Pure Python
+    # on top of cryptography.
+    "asyncssh>=2.24.1,<3",
+]
+
+[project.urls]
+Homepage = "https://woohoo-solutions.com"
+Source = "https://github.com/woohoo-solutions/collector"
+Issues = "https://github.com/woohoo-solutions/collector/issues"
+
+[project.scripts]
+disconet-collector = "netstate.cli:main"
+disconet-ssh = "netstate.legacyssh:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "netstate.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["netstate"]
+
+[tool.setuptools.package-data]
+# Without this the allowlist is missing from a wheel: the policy loads from a
+# checkout and fails on an installed copy.
+netstate = ["commands.yaml"]

@@ -455,7 +455,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if (exc.name or "").split(".")[0] not in PYATS_MODULES:
             raise
         _out(f"pyATS is not installed in this Python ({exc}). Install the collector into a "
-             f"virtualenv on Linux or macOS (`pip install disconet-collector`); on Windows, use WSL.")
+             f"virtualenv on Linux (`pip install disconet-collector`); on Windows, use WSL2.")
         return 2
 
 

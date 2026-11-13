@@ -39,9 +39,10 @@ add the case to `tests/test_redaction_battery.py` first and watch it fail.
 
 ## Sign your work: the Developer Certificate of Origin
 
-Every commit must carry a `Signed-off-by:` line with your real name and an
-email you can be reached at, certifying the Developer Certificate of Origin
-1.1 below. `git commit -s` adds it. Commits without one cannot be merged.
+Every commit in a pull request must carry a `Signed-off-by:` line with your
+real name and an email you can be reached at, certifying the Developer
+Certificate of Origin 1.1 below. `git commit -s` adds it. A pull request with
+a commit that has none cannot be merged.
 
 ```
 Developer Certificate of Origin

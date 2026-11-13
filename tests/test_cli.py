@@ -213,6 +213,41 @@ class EveryCommandRunsOwnerOnly(unittest.TestCase):
         self.assertEqual(os.umask(0o022), 0o077)
 
 
+class TheShortKeyLoginIsDisclosed(unittest.TestCase):
+    """The short-RSA-key login is automatic (owner's decision, 12 Nov 2026).
+
+    The README promises read-only rules and opt-ins; this login is the one
+    weaker login on by default, and it also offers legacy algorithms whatever
+    --allow-legacy-ssh says. The README must say both, in the words DiscoNet's
+    rule 4 and DN-SEC-001 use, and name only algorithms the client offers.
+    """
+
+    README = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
+
+    def test_the_readme_names_it_as_on_by_default_whatever_the_flag_says(self):
+        for words in ("One weaker login that is on by default", "under 1024 bits", "`disconet-ssh`",
+                      "held to the same pinned host key",
+                      "whether or not `--allow-legacy-ssh` is given", "A device behind a jump host is not covered",
+                      "It does not govern the short-key login below", "apart from the short-key login"):
+            self.assertIn(words, self.README)
+
+    def test_the_algorithms_it_names_are_the_ones_the_client_offers(self):
+        from netstate import legacyssh
+
+        said = self.README[self.README.index("One weaker login that is on by default"):]
+        said = said[:said.index("A device behind a jump host")]
+        self.assertIn("SHA-1 key exchange", said)
+        self.assertTrue(any("sha1" in kex for kex in legacyssh.LEGACY_KEX))
+        self.assertIn("CBC ciphers", said)
+        self.assertTrue(all(cipher.endswith("-cbc") for cipher in legacyssh.LEGACY_CIPHERS))
+        for name in ("hmac-md5", "ssh-rsa", "ssh-dss"):
+            self.assertIn(f"`{name}`", said)
+            self.assertIn(name, legacyssh.LEGACY_MACS + legacyssh.LEGACY_HOST_KEY_ALGS)
+
+    def test_notice_names_asyncssh(self):
+        self.assertIn("asyncssh", (ROOT / "NOTICE").read_text(encoding="utf-8"))
+
+
 class TheCommandIsInstalledAndRunsAsAModule(unittest.TestCase):
     def test_python_m_netstate_prints_the_version(self):
         ran = subprocess.run([sys.executable, "-m", "netstate", "--version"], capture_output=True, text=True,

@@ -106,7 +106,8 @@ grep -niE 'password|secret|key|community|token' $S/*/raw/*.txt | grep -v 'REDACT
 
 ## Quick start
 
-Linux or macOS, Python 3.11 or 3.12 (pyATS does not run on Windows; use WSL).
+Linux with Python 3.11 or 3.12, or Windows through WSL2 (pyATS does not run on
+Windows itself). macOS is not supported.
 
 ```bash
 python3 -m venv ~/collector-venv && source ~/collector-venv/bin/activate

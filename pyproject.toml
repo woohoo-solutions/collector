@@ -17,7 +17,6 @@ classifiers = [
     "Intended Audience :: System Administrators",
     "Intended Audience :: Telecommunications Industry",
     "Operating System :: POSIX :: Linux",
-    "Operating System :: MacOS",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: System :: Networking",

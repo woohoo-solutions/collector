@@ -42,7 +42,9 @@ add the case to `tests/test_redaction_battery.py` first and watch it fail.
 Every commit in a pull request must carry a `Signed-off-by:` line with your
 real name and an email you can be reached at, certifying the Developer
 Certificate of Origin 1.1 below. `git commit -s` adds it. A pull request with
-a commit that has none cannot be merged.
+a commit that has none cannot be merged. CI checks each commit's sign-off
+against its author's email; `tools/check_dco.sh origin/main HEAD` runs the
+same check before you push.
 
 ```
 Developer Certificate of Origin

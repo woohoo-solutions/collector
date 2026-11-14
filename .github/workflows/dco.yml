@@ -1,0 +1,33 @@
+# The DCO sign-off CONTRIBUTING.md asks of every commit in a pull request:
+# each one needs a `Signed-off-by:` line with its author's email
+# (tools/check_dco.sh). Plain git, no third-party action.
+#
+# This check blocks a merge only once it is required: GitHub, Settings,
+# Branches (or Rules), protect main and add "dco" as a required status check.
+name: dco
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dco-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dco:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole history, so both ends of the pull request are here.
+          fetch-depth: 0
+
+      - name: Every commit is signed off
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash tools/check_dco.sh "$BASE_SHA" "$HEAD_SHA"

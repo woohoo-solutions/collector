@@ -335,6 +335,7 @@ _INTERNAL_NAMES = {
 }
 _ANY_INTERNAL_NAME = frozenset(name for names in _INTERNAL_NAMES.values() for name in names)
 _MANAGEMENT_VRFS = {platform.key: frozenset(platform.management_vrfs) for platform in PLATFORMS}
+_OWN_VRFS = {platform.key: frozenset(platform.own_vrfs) for platform in PLATFORMS}
 _BUILTIN_NAMES = frozenset(n.lower() for platform in PLATFORMS for n in platform.builtin_names)
 _FACTORY_HOSTNAMES = frozenset(n.lower() for platform in PLATFORMS for n in platform.factory_hostnames)
 _HOSTNAME_SUFFIXES = tuple(sorted(
@@ -551,6 +552,15 @@ def is_platform_management_vrf(vrf: str | None, os_name: str | None) -> bool:
     Read on the device's own OS: a VRF the operator named alike elsewhere is theirs.
     """
     return bool(vrf) and vrf in _MANAGEMENT_VRFS.get(str(os_name or "").strip().lower(), ())
+
+
+def is_platform_own_vrf(vrf: str | None, os_name: str | None) -> bool:
+    """A VRF the OS creates for itself that is no service (NX-OS `egress-loadbalance-resolution-`).
+
+    Exact names only, read on the device's own OS: a VRF the operator named
+    alike, or the same name on another OS, is theirs.
+    """
+    return bool(vrf) and vrf in _OWN_VRFS.get(str(os_name or "").strip().lower(), ())
 
 
 def is_builtin_name(name: str | None) -> bool:

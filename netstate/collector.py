@@ -5907,6 +5907,23 @@ class Snapshot:
         """
         return self.status(device, command) in self.ANSWERED and says_not_running(self.raw(device, command) or "")
 
+    def feature_not_enabled(self, device: str, command: str) -> bool:
+        """Did the device reject a command its OS shows only with a feature enabled?
+
+        NX-OS hides the PIM show commands until `feature pim` is enabled, and a
+        switch without it rejects them as invalid input. That is the switch
+        saying it runs no PIM, a reading, not a gap. Only a rejection
+        (`unsupported`) of a command the platform's `feature_gated` names; a
+        timeout or any other failure is still a gap.
+        """
+        if self.status(device, command) != "unsupported":
+            return False
+        platform = platforms.platform_for((self.devices.get(device) or {}).get("os"))
+        normal = CommandPolicy.normalise(command)
+        return platform is not None and any(
+            normal.startswith(CommandPolicy.normalise(prefix)) for prefix, _feature in platform.feature_gated
+        )
+
     def produced_data(self, device: str) -> bool:
         """Did this device answer anything at all?
 
@@ -6150,6 +6167,8 @@ class Snapshot:
                 # than ten times: whole-fleet noise buries the real failures.
                 if status == "unsupported":
                     if any(command in spellings and answered & spellings for spellings in self.ALIASES):
+                        continue
+                    if self.feature_not_enabled(name, str(entry.get("command", ""))):
                         continue
                     unsupported.setdefault(entry["command"], []).append(name)
                 elif status == "unparsed" and (

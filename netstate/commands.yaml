@@ -877,6 +877,28 @@ nxos:
       parse:
         # `peer-status` is the NX-OS spelling of the associations table.
         - show ntp peer-status
+    # Multicast (0.3.0, the owner's approval of 16 November 2026), each one
+    # checked as written against Cisco's Nexus 9000 show-command references
+    # for 9.3 and 10.4 and the multicast configuration guides for 9.3 and
+    # 10.6. `vrf all` on every one that takes it, as on the interface
+    # commands. The three PIM commands exist only with `feature pim` enabled;
+    # a switch without it rejects them, which says it runs no PIM
+    # (Platform.feature_gated) and is no gap. IGMP runs by default.
+    multicast:
+      parse:
+        # The RP each group range maps to, per VRF.
+        - show ip pim rp vrf all
+        # The PIM adjacencies: the multicast topology's links.
+        - show ip pim neighbor vrf all
+        # Which interfaces run PIM, and the DR on each.
+        - show ip pim interface vrf all
+        # Counts, not the full table: `summary` before `vrf all`, as Cisco
+        # documents it.
+        - show ip mroute summary vrf all
+        # Receivers: IGMP members per VRF, and snooping per VLAN (snooping
+        # takes no `vrf`).
+        - show ip igmp groups vrf all
+        - show ip igmp snooping groups
     # The access layer, as on IOS-XE. The switchport view carries the allowed
     # list and the native VLAN; only the trunk view says which of the allowed
     # VLANs the spanning tree forwards on each trunk now, the one proof that a

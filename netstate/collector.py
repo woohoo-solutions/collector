@@ -1857,6 +1857,30 @@ def _every_device_has(os_name: str, command: str) -> bool:
     return CommandPolicy.normalise(command) in {CommandPolicy.normalise(c) for c in everywhere if c}
 
 
+def _nothing_parsed(os_name: str, command: str, raw: str | None) -> tuple[str, str]:
+    """`(status, detail)` for a parse that returned no data without raising.
+
+    `empty` says the device had nothing to report. That holds when it printed
+    nothing, but not for a command the platform reads from its text that
+    printed output: NX-OS `show interface trunk` printed 2 to 20 KB on every
+    switch of the first NX-OS field run (13 November 2026) and was recorded
+    `empty`. Such a command is `unparsed`, its text kept, and it is no gap
+    (`Snapshot.gaps` passes over the platform's `text_parsed`). For any other
+    command nothing proves the output held data, so the status stays `empty`
+    and the detail says how much output there was.
+    """
+    lines = sum(1 for line in (raw or "").splitlines() if line.strip())
+    platform = platforms.platform_for(os_name)
+    text_read = platform is not None and CommandPolicy.normalise(command) in {
+        CommandPolicy.normalise(c) for c in platform.text_parsed
+    }
+    if lines and text_read:
+        return "unparsed", f"the parser returned no data from {lines} line(s) of output; read from the text"
+    if lines:
+        return "empty", f"parser returned no data ({lines} line(s) of output kept)"
+    return "empty", "parser returned no data"
+
+
 def _collect_command(
     device,
     os_name: str,
@@ -1959,9 +1983,8 @@ def _collect_command(
             result.status = "parsed"
             log.info("%s: %s -> parsed", device_name, command)
         else:
-            result.status = "empty"
-            result.detail = "parser returned no data"
-            log.info("%s: %s -> empty", device_name, command)
+            result.status, result.detail = _nothing_parsed(os_name, command, raw)
+            log.info("%s: %s -> %s (%s)", device_name, command, result.status, result.detail)
 
     if parsed or result.status == "empty":
         state_path = device_dir / "state" / f"{stem}.json"
@@ -2328,7 +2351,10 @@ def _collect_per_vrf(
             result.status = "empty" if type(exc).__name__ == "SchemaEmptyParserError" else "unparsed"
             result.detail = f"{type(exc).__name__}: {exc}".splitlines()[0][:400]
         else:
-            result.status = "parsed" if parsed else "empty"
+            if parsed:
+                result.status = "parsed"
+            else:
+                result.status, result.detail = _nothing_parsed(os_name, command, raw)
         if parsed or result.status == "empty":
             state_path = device_dir / "state" / f"{slugs[command]}.json"
             _write_json(state_path, parsed or {})

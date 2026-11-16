@@ -560,6 +560,10 @@ class Platform:
     # in one is out-of-band whatever it is called. A VRF the operator named
     # is not read for what its name seems to say.
     management_vrfs: tuple[str, ...] = ()
+    # VRFs the OS creates for itself that are no management VRF and no
+    # service anybody configured (NX-OS's `egress-loadbalance-resolution-`
+    # on the Nexus 9000). Read on the device's own OS only.
+    own_vrfs: tuple[str, ...] = ()
     # Words this OS's configuration puts where a name goes that are its own,
     # not anybody's naming convention: the built-in AAA server groups
     # (`group tacacs+`), a firewall's factory interface names and the names
@@ -1142,6 +1146,9 @@ NXOS = Platform(
     ssh_banner_hints=(),
     internal_types=("mgmt",),
     management_vrfs=("management",),
+    # Created by NX-OS on the Nexus 9000 for egress load-balance resolution
+    # (first NX-OS field run, 13 November 2026); nobody configures it.
+    own_vrfs=("egress-loadbalance-resolution-",),
     logical_types=("nve",),
     factory_hostnames=("switch",),
     builtin_names=("tacacs+", "radius", "ldap", "default", "class-default"),
@@ -1176,6 +1183,11 @@ NXOS = Platform(
         "show ip ospf database router detail vrf all", "show ip ospf database network detail vrf all",
         # The switching readers read these from the text.
         "show spanning-tree", "show spanning-tree detail", "show interface trunk",
+        # Read from the text by DiscoNet (first NX-OS field run, 13 November
+        # 2026): Genie's schema fails the first on 9.3 and 10.x, has no NX-OS
+        # parser for the second, and fails the third with no peer configured.
+        "show ipv6 neighbor detail vrf all", "show spanning-tree mst configuration",
+        "show ntp peer-status",
     ),
     config_families=(
         ("hostname", "identity"),

@@ -564,6 +564,11 @@ class Platform:
     # service anybody configured (NX-OS's `egress-loadbalance-resolution-`
     # on the Nexus 9000). Read on the device's own OS only.
     own_vrfs: tuple[str, ...] = ()
+    # `(command prefix, feature)`: commands the OS hides until a feature is
+    # enabled. A device that rejects one as invalid input is saying it does
+    # not run that feature, and that is no collection gap (NX-OS `feature
+    # pim`, which the PIM show commands need).
+    feature_gated: tuple[tuple[str, str], ...] = ()
     # Words this OS's configuration puts where a name goes that are its own,
     # not anybody's naming convention: the built-in AAA server groups
     # (`group tacacs+`), a firewall's factory interface names and the names
@@ -1149,6 +1154,9 @@ NXOS = Platform(
     # Created by NX-OS on the Nexus 9000 for egress load-balance resolution
     # (first NX-OS field run, 13 November 2026); nobody configures it.
     own_vrfs=("egress-loadbalance-resolution-",),
+    # The PIM show commands exist only with `feature pim` enabled (Cisco,
+    # Nexus 9000 multicast routing configuration guide, 9.3 and 10.6).
+    feature_gated=(("show ip pim", "pim"),),
     logical_types=("nve",),
     factory_hostnames=("switch",),
     builtin_names=("tacacs+", "radius", "ldap", "default", "class-default"),

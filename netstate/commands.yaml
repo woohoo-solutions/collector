@@ -941,6 +941,11 @@ junos:
     # The full interface table, for the MAC each physical interface answers
     # with (`Current address`); see IOS-XE. Every logical unit shares it.
     - show interfaces
+    # The byte counters and the load-interval rates, which `show interfaces`
+    # without `extensive` does not print: the traffic estimate takes the
+    # counter difference between two reads as the mean rate between them.
+    # Long on a large chassis; read-only like every line here.
+    - show interfaces extensive
     # ARP and IPv6 neighbour tables, as on the Cisco side: an entry whose
     # address belongs to another collected interface is evidence of an
     # adjacency independent of LLDP. `no-resolve` keeps the output to

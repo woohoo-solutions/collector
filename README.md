@@ -160,6 +160,36 @@ collect --help` lists the options: `--devices`, `--features`, timeouts,
 workers, `--session-log` and the opt-ins above. `python -m netstate` is the
 same command.
 
+## Re-reading a few commands (0.4.0)
+
+`netstate.collector.run_recollect(testbed, devices, commands)` reads only
+the named commands from the named devices into a snapshot of its own. It is
+a Python call, for a program that drives the Collector (DiscoNet's
+`sample`, which reads interface counters a few times a day); the command
+line does not offer it yet.
+
+- Every command must already be on the allowlist for each device's OS,
+  checked before any device is contacted. A re-collect narrows what is
+  sent; it cannot add a command. An empty list is refused.
+- It sends those commands and nothing else: no probe, no identifying
+  `show version` unless named, no per-VRF table.
+- Its manifest says so: `partial: true`, `requested_commands`, and
+  `recollect_of`, the full run it reads again where the caller names one.
+  Every manifest carries `partial` (false for an ordinary run).
+
+Every manifest from 0.4.0 on also records when each command was sent
+(`started_at`) and, per device, when its first command was sent
+(`read_at`), in UTC. A run of hundreds of devices takes half an hour or
+more, and a reading taken at its end was not taken when it began.
+`Snapshot.read_by(device)` returns that moment, and the run's start for a
+manifest written before 0.4.0.
+
+0.4.0 adds one command to the Junos allowlist, `show interfaces extensive`,
+for the byte counters and rates `show interfaces` does not print. It is
+long on a large chassis, and read-only like every other line.
+
+Built and tested on fixtures and test doubles; not yet run against a device.
+
 ## What the export holds
 
 One `.export.tar.gz` file holds only the collection:

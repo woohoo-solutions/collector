@@ -1,6 +1,6 @@
 """netstate — read-only collection of network device state."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from netstate.collector import (  # noqa: E402,F401 — the public surface
     ALL_FEATURES, PROTOCOL_FEATURES, SERVICE_FEATURES, FEATURE_LABELS,

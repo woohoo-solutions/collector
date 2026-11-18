@@ -232,6 +232,13 @@ class OneDevice(OwnTempDirectoryTestCase):
         # kept is the second attempt's, sent later.
         self.assertGreater(result.started_at, "2026-11-18T06:00:01+00:00")
 
+    def test_a_device_whose_os_a_per_os_recollect_does_not_name_is_never_contacted(self):
+        device = self.device()
+        outcome = _collect_device(device, POLICY, self.root, commands={"iosxe": ["show interfaces"]})
+        self.assertEqual(device.commands, [])
+        self.assertFalse(outcome.connected)
+        self.assertIn("not asked", outcome.error)
+
     def test_a_device_never_reached_has_no_read_moment(self):
         device = self.device(connect_errors=[ConnectionError("refused")] * 3)
         outcome = _collect_device(device, POLICY, self.root, commands=["show interfaces"])
@@ -324,6 +331,30 @@ class Runs(OwnTempDirectoryTestCase):
     def test_recollect_refuses_the_options_it_pins(self):
         with self.assertRaisesRegex(CollectionError, "verify_reachability"):
             self.go(devices=["zz-lab-pe1"], commands=["show interfaces"], verify_reachability=True)
+
+    def test_a_command_list_per_os_sends_each_device_its_own(self):
+        manifest = self.go(
+            devices=["zz-lab-pe1", "zz-lab-ce1"],
+            commands={"iosxr": ["show interfaces"], "iosxe": ["show version", "show interfaces"]},
+        )
+        self.assertEqual(dict(self.calls)["zz-lab-pe1"], {"iosxr": ["show interfaces"],
+                                                         "iosxe": ["show version", "show interfaces"]})
+        # Allowlist order within each OS, the OSes in name order: reproducible.
+        self.assertEqual(manifest["requested_commands"], ["show version", "show interfaces"])
+        self.assertIs(manifest["partial"], True)
+
+    def test_a_command_list_per_os_is_checked_per_os_before_the_pool_starts(self):
+        with self.assertRaisesRegex(CommandNotAllowed, "iosxe.*show isis adjacency"):
+            self.go(devices=["zz-lab-pe1", "zz-lab-ce1"],
+                    commands={"iosxr": ["show isis adjacency"], "iosxe": ["show isis adjacency"]})
+        self.assertEqual(self.calls, [])
+
+    def test_commands_for_reads_one_list_or_the_os_entry_and_refuses_an_os_not_named(self):
+        self.assertIsNone(collector.commands_for(None, "iosxe"))
+        self.assertEqual(collector.commands_for(["show interfaces"], "iosxe"), ["show interfaces"])
+        self.assertEqual(collector.commands_for({"nxos": ["show interface"]}, "nxos"), ["show interface"])
+        with self.assertRaisesRegex(collector.NotAsked, "names no command for os 'asa'"):
+            collector.commands_for({"nxos": ["show interface"]}, "asa")
 
     def test_each_device_is_dated_by_its_own_read_not_the_run_start(self):
         manifest = self.go(devices=["zz-lab-pe1", "zz-lab-ce1"], commands=["show interfaces"])

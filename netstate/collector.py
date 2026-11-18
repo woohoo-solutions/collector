@@ -42,7 +42,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence, Union
 
 import yaml
 
@@ -3623,7 +3623,7 @@ def _collect_device(
     allow_legacy_ssh: bool = False,
     allow_telnet: bool = False,
     known_hosts: Path | str | None = None,
-    commands: Iterable[str] | None = None,
+    commands: "Recollect | None" = None,
 ) -> DeviceResult:
     """Connect, run the allowlist, disconnect. Never raises for one device.
 
@@ -3794,7 +3794,7 @@ def _run_device(
     allow_legacy_ssh: bool = False,
     allow_telnet: bool = False,
     known_hosts: Path | str | None = None,
-    commands: Iterable[str] | None = None,
+    commands: "Recollect | None" = None,
 ) -> DeviceResult:
     # Filled in place where the caller hands one in, so what was collected
     # survives an error that escapes from here.
@@ -3833,7 +3833,7 @@ def _run_device(
     outcome.platform = str(getattr(device, "platform", "") or "") or None
 
     try:
-        plan = policy.plan_for(os_name, commands)
+        plan = policy.plan_for(os_name, commands_for(commands, os_name))
     except (CollectionError, CommandNotAllowed) as exc:
         outcome.error = str(exc)
         log.warning("%s skipped: %s", device.name, exc)
@@ -3967,7 +3967,7 @@ def _run_device(
         nonlocal os_name, plan, session_setup, second_enable
         platform = platforms.platform_for(proven)
         try:
-            proven_plan = policy.plan_for(proven, commands)
+            proven_plan = policy.plan_for(proven, commands_for(commands, proven))
         except CollectionError:
             return ""
         except CommandNotAllowed as exc:
@@ -4896,7 +4896,7 @@ def run_collect(
     allow_telnet: bool = False,
     known_hosts: Path | str | None = None,
     confirm_host_key: "hostkeys.Confirm | None" = None,
-    commands: Iterable[str] | None = None,
+    commands: "Recollect | None" = None,
     recollect_of: str = "",
 ) -> dict[str, Any]:
     """Collect structured + raw state for every selected device.
@@ -5002,17 +5002,28 @@ def run_collect(
     # one message, not one device at a time halfway through.
     requested_commands: list[str] = []
     if commands is not None:
-        commands = list(commands)
+        commands = (
+            {str(os_name): list(group) for os_name, group in commands.items()}
+            if isinstance(commands, Mapping) else list(commands)
+        )
         for os_name in sorted({
             str(getattr(testbed.devices[name], "os", "") or "") for name in selected
         } - {""}):
-            narrowed = policy.plan_for(os_name, commands)
+            try:
+                wanted = commands_for(commands, os_name)
+            except NotAsked:
+                continue  # recorded per device; it is not contacted
+            narrowed = policy.plan_for(os_name, wanted)
             for command in (*narrowed.parse, *narrowed.raw_only,
                             *(c for _, group in narrowed.features for c in group)):
                 if command not in requested_commands:
                     requested_commands.append(command)
         if not requested_commands:
-            requested_commands = [policy.normalise(command) for command in commands]
+            flat = (
+                [c for group in commands.values() for c in group]
+                if isinstance(commands, dict) else commands
+            )
+            requested_commands = list(dict.fromkeys(policy.normalise(c) for c in flat))
 
     # Validated before anything is contacted, exactly as the allowlist is: a
     # malformed login prompt should stop the run, not fail one device at a time
@@ -5263,10 +5274,38 @@ def run_collect(
     return manifest
 
 
+# What a re-collect names: one list for every device, or a list per OS where
+# the same reading has a different command on each (`show interfaces` on IOS,
+# `show interface` on NX-OS, `show interfaces extensive` on Junos).
+Recollect = Union[Iterable[str], Mapping[str, Iterable[str]]]
+
+
+class NotAsked(CommandNotAllowed):
+    """A per-OS re-collect named no command for this device's OS: it is not contacted."""
+
+
+def commands_for(commands: "Recollect | None", os_name: str) -> list[str] | None:
+    """The commands a re-collect names for ``os_name``; None for an ordinary run.
+
+    A mapping that names no list for the OS raises :class:`NotAsked`: the
+    device is recorded as not asked, never sent something else.
+    """
+    if commands is None:
+        return None
+    if isinstance(commands, Mapping):
+        if os_name not in commands:
+            raise NotAsked(
+                f"not asked: this re-collect names no command for os '{os_name}' "
+                f"(it names {', '.join(sorted(map(str, commands))) or 'none'})"
+            )
+        return list(commands[os_name])
+    return list(commands)
+
+
 def run_recollect(
     testbed_path: Path | str,
     devices: Iterable[str],
-    commands: Iterable[str],
+    commands: "Recollect",
     base_dir: Path | str = "snapshots",
     recollect_of: str = "",
     **options: Any,
@@ -5277,12 +5316,18 @@ def run_recollect(
     itself. Every command must be on each device's allowlist (checked before
     any connection), feature groups do not narrow it further, and neither a
     probe nor the demo animation belongs in it. ``recollect_of`` names the
-    full run this one reads again; ``options`` are run_collect's
+    full run this one reads again. ``commands`` is one list for every device,
+    or a mapping of OS to list; a device whose OS the mapping does not name
+    is recorded as not asked and is not contacted. ``options`` are run_collect's
     (connect_timeout, command_timeout, workers, session_log, double_enable,
     commands_file, estate, db_path, ...).
     """
-    devices, commands = list(devices), list(commands)
-    if not devices or not commands:
+    devices = list(devices)
+    commands = (
+        {str(os_name): list(group) for os_name, group in commands.items()}
+        if isinstance(commands, Mapping) else list(commands)
+    )
+    if not devices or not commands or (isinstance(commands, dict) and not all(commands.values())):
         raise CollectionError("a re-collect names at least one device and at least one command")
     for pinned in ("features", "verify_reachability", "demo", "crawl"):
         if pinned in options:

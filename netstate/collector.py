@@ -528,13 +528,47 @@ class CommandPolicy:
     def os_names(self) -> tuple[str, ...]:
         return tuple(self._plans)
 
-    def plan_for(self, os_name: str) -> OsPlan:
+    def plan_for(self, os_name: str, commands: Iterable[str] | None = None) -> OsPlan:
+        """The plan for ``os_name``, narrowed to ``commands`` when they are named.
+
+        ``None`` is the ordinary plan. A list is a targeted re-collect: every
+        command in it must be on this OS's allowlist (feature groups
+        included), the result keeps them in allowlist order, carries no
+        probe and no per-VRF template, and an empty list is refused. A
+        re-collect can narrow what is sent; it cannot add a command.
+        """
         if os_name not in self._plans:
             raise CollectionError(
                 f"no allowlist entry for OS '{os_name}' in {self.source} "
                 f"(known: {', '.join(self.os_names)})"
             )
-        return self._plans[os_name]
+        plan = self._plans[os_name]
+        if commands is None:
+            return plan
+        wanted = [self.normalise(command) for command in commands]
+        if not wanted:
+            raise CommandNotAllowed(
+                f"{os_name}: a re-collect must name at least one command; an empty "
+                f"list would send nothing and report a device that answered nothing"
+            )
+        allowed = {self.normalise(command) for command in plan.commands}
+        unknown = [command for command in wanted if command not in allowed]
+        if unknown:
+            raise CommandNotAllowed(
+                f"{os_name}: not in the allowlist {self.source}: {', '.join(unknown)}. "
+                f"A re-collect can narrow what is sent; it cannot add a command."
+            )
+
+        def keep(group: tuple[str, ...]) -> tuple[str, ...]:
+            return tuple(command for command in group if self.normalise(command) in wanted)
+
+        return OsPlan(
+            os=plan.os,
+            parse=keep(plan.parse),
+            raw_only=keep(plan.raw_only),
+            probe=(),  # probes are opt-in per run, never implied by a re-collect
+            features=tuple((key, keep(group)) for key, group in plan.features if keep(group)),
+        )
 
     def allowed_commands(self, os_name: str) -> set[str]:
         return set(self.plan_for(os_name).commands)
@@ -1625,6 +1659,15 @@ def jsonable(value: Any) -> Any:
 # --------------------------------------------------------------------------
 
 
+def _instant_key(moment: str) -> datetime:
+    """An ISO 8601 moment as a datetime, for ordering; a moment that is not one sorts first."""
+    try:
+        parsed = datetime.fromisoformat(str(moment))
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 @dataclass
 class CommandResult:
     """Outcome of collecting one command from one device."""
@@ -1636,9 +1679,13 @@ class CommandResult:
     redacted_lines: int = 0
     seconds: float = 0.0
     detail: str | None = None
+    # When the attempt that answered was sent, ISO 8601 in UTC; None for a
+    # command never sent. A 400-device run takes half an hour or more, and a
+    # rate read at its end was not read when the run began.
+    started_at: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        entry = {
             "command": self.command,
             "status": self.status,
             "state_file": self.state_file,
@@ -1647,6 +1694,9 @@ class CommandResult:
             "seconds": self.seconds,
             "detail": self.detail,
         }
+        if self.started_at:
+            entry["started_at"] = self.started_at
+        return entry
 
 
 @dataclass
@@ -1700,6 +1750,12 @@ class DeviceResult:
     def parsed_count(self) -> int:
         return sum(1 for c in self.commands if c.status == "parsed")
 
+    @property
+    def read_at(self) -> str | None:
+        """When this device's first command was sent, UTC; None where none was."""
+        moments = [c.started_at for c in self.commands if c.started_at]
+        return min(moments, key=_instant_key) if moments else None
+
     def as_dict(self) -> dict[str, Any]:
         entry = {
             "name": self.name,
@@ -1712,6 +1768,10 @@ class DeviceResult:
             "detected_os": self.detected_os,
             "commands": [c.as_dict() for c in self.commands],
         }
+        # When this device was read, which in a long run is not when the run
+        # began: Snapshot.read_by returns it. Absent where nothing was sent.
+        if self.read_at:
+            entry["read_at"] = self.read_at
         # Only where it differs, so every other entry, and every manifest
         # written before the reconnect existed, reads exactly as it did.
         if self.declared_os and self.declared_os != self.os:
@@ -1908,8 +1968,13 @@ def _collect_command(
 
     raw = answer
     attempts = TIMEOUT_ATTEMPTS if answer is None else 0
+    # An answer asked for earlier, to identify the device, was read moments
+    # ago in this session; the moment it is kept is the nearest one known.
+    result.started_at = started.isoformat()
     for attempt in range(1, attempts + 1):
         try:
+            # Each attempt's own moment: a retry after a timeout answered later.
+            result.started_at = datetime.now(timezone.utc).isoformat()
             raw = _execute(device, policy, os_name, command, command_timeout)
             break
         except CommandNotAllowed:
@@ -3558,8 +3623,12 @@ def _collect_device(
     allow_legacy_ssh: bool = False,
     allow_telnet: bool = False,
     known_hosts: Path | str | None = None,
+    commands: Iterable[str] | None = None,
 ) -> DeviceResult:
     """Connect, run the allowlist, disconnect. Never raises for one device.
+
+    ``commands`` narrows the allowlist to the named commands, as a targeted
+    re-collect does (:meth:`CommandPolicy.plan_for`); None sends the plan.
 
     Whatever happened, the session transcript ends up redacted inside the
     snapshot and nowhere else: see :func:`store_connect_log`. An error that
@@ -3574,6 +3643,7 @@ def _collect_device(
             verify_reachability, probe_limit, features, prompts, login_gate, double_enable,
             credential_set, secrets, outcome=outcome,
             allow_legacy_ssh=allow_legacy_ssh, allow_telnet=allow_telnet, known_hosts=known_hosts,
+            commands=commands,
         )
     except Exception as exc:  # noqa: BLE001 - a defect stops one device, not the run
         log.error("%s: collection stopped by an unexpected error", device.name, exc_info=True)
@@ -3724,6 +3794,7 @@ def _run_device(
     allow_legacy_ssh: bool = False,
     allow_telnet: bool = False,
     known_hosts: Path | str | None = None,
+    commands: Iterable[str] | None = None,
 ) -> DeviceResult:
     # Filled in place where the caller hands one in, so what was collected
     # survives an error that escapes from here.
@@ -3762,8 +3833,8 @@ def _run_device(
     outcome.platform = str(getattr(device, "platform", "") or "") or None
 
     try:
-        plan = policy.plan_for(os_name)
-    except CollectionError as exc:
+        plan = policy.plan_for(os_name, commands)
+    except (CollectionError, CommandNotAllowed) as exc:
         outcome.error = str(exc)
         log.warning("%s skipped: %s", device.name, exc)
         return outcome
@@ -3896,9 +3967,13 @@ def _run_device(
         nonlocal os_name, plan, session_setup, second_enable
         platform = platforms.platform_for(proven)
         try:
-            proven_plan = policy.plan_for(proven)
+            proven_plan = policy.plan_for(proven, commands)
         except CollectionError:
             return ""
+        except CommandNotAllowed as exc:
+            # A re-collect named commands the proven OS does not allow: the
+            # device is reported, not read with something else.
+            return f"not collected again as {proven}: {exc}"
         if platform is None:
             return ""
         # unicon picks its plugin from device.os when the connection object is
@@ -4244,7 +4319,12 @@ def _run_device(
         # own, settles it before thirty commands are sent under the wrong
         # allowlist; a double-enable session asked it already, before its
         # enable, and is not asked twice.
-        if "os" not in identified:
+        # A re-collect sends the commands it names and nothing else: the
+        # device was identified by the full run it reads again, and a
+        # sweep of 400 devices is not sent 400 more commands to prove it.
+        # Where it names `show version`, that is asked here and kept.
+        recollect_skips = commands is not None and IDENTIFY_COMMAND not in plan.commands
+        if "os" not in identified and not recollect_skips:
             identified["os"] = identify_before_enable(
                 device, os_name, policy, command_timeout, transcript_path, answered
             )
@@ -4816,6 +4896,8 @@ def run_collect(
     allow_telnet: bool = False,
     known_hosts: Path | str | None = None,
     confirm_host_key: "hostkeys.Confirm | None" = None,
+    commands: Iterable[str] | None = None,
+    recollect_of: str = "",
 ) -> dict[str, Any]:
     """Collect structured + raw state for every selected device.
 
@@ -4868,6 +4950,12 @@ def run_collect(
     ``known_hosts`` (default: `known_hosts` beside the testbed), strictly.
     ``confirm_host_key``, given only where someone is at a terminal, is asked
     about each unpinned key before the first login; see :mod:`netstate.hostkeys`.
+
+    ``commands`` narrows every device's plan to the named commands, a
+    targeted re-collect (:func:`run_recollect`): each is checked against
+    every selected device's OS before anything is contacted, and the
+    manifest is marked ``partial``. ``recollect_of`` names the full run the
+    re-collect reads again, recorded and sent to no device.
     """
     from genie.testbed import load as load_testbed  # imported late: heavy dependency
 
@@ -4908,6 +4996,23 @@ def run_collect(
     not_requested = [
         name for name in testbed.devices if name not in jumphosts and name not in selected
     ]
+
+    # A re-collect's command list, checked against every OS among the
+    # selected devices before the pool starts: a bad request fails the run in
+    # one message, not one device at a time halfway through.
+    requested_commands: list[str] = []
+    if commands is not None:
+        commands = list(commands)
+        for os_name in sorted({
+            str(getattr(testbed.devices[name], "os", "") or "") for name in selected
+        } - {""}):
+            narrowed = policy.plan_for(os_name, commands)
+            for command in (*narrowed.parse, *narrowed.raw_only,
+                            *(c for _, group in narrowed.features for c in group)):
+                if command not in requested_commands:
+                    requested_commands.append(command)
+        if not requested_commands:
+            requested_commands = [policy.normalise(command) for command in commands]
 
     # Validated before anything is contacted, exactly as the allowlist is: a
     # malformed login prompt should stop the run, not fail one device at a time
@@ -5070,7 +5175,7 @@ def run_collect(
                     gates.get(proxy_names(testbed.devices[name])), double_enable,
                     secrets, credential_sets.get(name),
                     allow_legacy_ssh=allow_legacy_ssh, allow_telnet=allow_telnet,
-                    known_hosts=pins,
+                    known_hosts=pins, commands=commands,
                 )
                 finished.append(result)
             finally:
@@ -5110,6 +5215,8 @@ def run_collect(
             connect_timeout, command_timeout, verify_reachability, chosen, skipped,
             mode, double_enable, demo, crawl_record, estate, retry_of, not_requested,
             finished_at=datetime.now(timezone.utc),
+            requested_commands=requested_commands if commands is not None else None,
+            recollect_of=recollect_of,
         )
         manifest["connection_policy"] = connection_policy
         _write_json(snapshot_root / "manifest.json", manifest)
@@ -5139,6 +5246,8 @@ def run_collect(
                 connect_timeout, command_timeout, verify_reachability, chosen, skipped,
                 mode, double_enable, demo, crawl_record, estate, retry_of, not_requested,
                 in_session=still, connection_policy=connection_policy,
+                requested_commands=requested_commands if commands is not None else None,
+                recollect_of=recollect_of,
             )
         raise
     finally:
@@ -5152,6 +5261,37 @@ def run_collect(
         handler.close()
 
     return manifest
+
+
+def run_recollect(
+    testbed_path: Path | str,
+    devices: Iterable[str],
+    commands: Iterable[str],
+    base_dir: Path | str = "snapshots",
+    recollect_of: str = "",
+    **options: Any,
+) -> dict[str, Any]:
+    """Re-read named commands from named devices into a partial snapshot.
+
+    The mechanism a scheduler or an event loop calls; it is none of those
+    itself. Every command must be on each device's allowlist (checked before
+    any connection), feature groups do not narrow it further, and neither a
+    probe nor the demo animation belongs in it. ``recollect_of`` names the
+    full run this one reads again; ``options`` are run_collect's
+    (connect_timeout, command_timeout, workers, session_log, double_enable,
+    commands_file, estate, db_path, ...).
+    """
+    devices, commands = list(devices), list(commands)
+    if not devices or not commands:
+        raise CollectionError("a re-collect names at least one device and at least one command")
+    for pinned in ("features", "verify_reachability", "demo", "crawl"):
+        if pinned in options:
+            raise CollectionError(f"a re-collect does not take {pinned!r}: naming a command is the selection")
+    return run_collect(
+        testbed_path, base_dir=base_dir, devices=devices, commands=commands,
+        features=None, verify_reachability=False, demo=False, recollect_of=recollect_of,
+        **options,
+    )
 
 
 # How many more interrupts the run waits through, after the one that stopped
@@ -5221,6 +5361,8 @@ def _keep_interrupted_run(
     testbed_path: Path | str, policy: CommandPolicy, selected: list[str], *settings: Any,
     in_session: Sequence[str] = (),
     connection_policy: dict[str, Any] | None = None,
+    requested_commands: Sequence[str] | None = None,
+    recollect_of: str = "",
 ) -> None:
     """Write the manifest of a run that stopped before its end, for the devices that finished.
 
@@ -5244,6 +5386,7 @@ def _keep_interrupted_run(
     manifest = _build_manifest(
         snapshot_root, started, testbed_path, policy, requested, finished, *settings,
         finished_at=datetime.now(timezone.utc),
+        requested_commands=requested_commands, recollect_of=recollect_of,
     )
     reason = (
         "interrupted (Ctrl-C or a signal)" if isinstance(exc, KeyboardInterrupt)
@@ -5815,8 +5958,28 @@ class Snapshot:
         entry = self.devices.get(device) or {}
         return str(entry.get("testbed_name") or device)
 
+    @property
+    def partial(self) -> bool:
+        """A targeted re-collect: only `requested_commands` were sent."""
+        return bool(self.manifest.get("partial"))
+
+    @property
+    def requested_commands(self) -> tuple[str, ...]:
+        return tuple(str(c) for c in self.manifest.get("requested_commands") or ())
+
+    @property
+    def recollect_of(self) -> str:
+        """The full run a partial re-collect reads again; "" where none was named."""
+        return str(self.manifest.get("recollect_of") or "")
+
     def read_by(self, device: str) -> tuple[str, str]:
-        """The run that read this device and when it began, as `(snapshot_id, created_at)`.
+        """The run that read this device and when, as `(snapshot_id, moment)`.
+
+        The moment is when the device's first command was sent, as the run
+        recorded it (`read_at` in the device's entry, netstate 0.4.0 on);
+        a run written before that is dated by when it began. A run of 400
+        devices takes half an hour or more, so the run's start is not when
+        its last device was read.
 
         A run's own for a run. A merge carries its newest source's created_at,
         and a device taken from an earlier run was read then, so the merge
@@ -5829,7 +5992,8 @@ class Snapshot:
         """
         source, when = store.merged_read_by(self.manifest, (device, self.testbed_name(device)))
         if not source:
-            return self.snapshot_id, self.created_at
+            entry = self.devices.get(device) or {}
+            return self.snapshot_id, str(entry.get("read_at") or "") or self.created_at
         return source, when or self.created_at
 
     def learned_from(self, testbed_name: str) -> str:
@@ -6418,8 +6582,14 @@ def _build_manifest(
     retry_of: str = "",
     not_requested: Iterable[str] = (),
     finished_at: datetime | None = None,
+    requested_commands: Iterable[str] | None = None,
+    recollect_of: str = "",
 ) -> dict[str, Any]:
     """The collection manifest of one run.
+
+    ``requested_commands`` is the command list of a targeted re-collect, and
+    marks the manifest ``partial``; None for an ordinary run, which records
+    ``partial: false`` and an empty list, so a reader never tests for absence.
 
     ``finished_at`` is when the run ended, recorded in UTC whatever its zone.
     It is None for a manifest of a run still under way (the crawl reads one
@@ -6478,6 +6648,13 @@ def _build_manifest(
         # empty for a run of the whole testbed. Like a retry round's, such a
         # run is part of the estate and never the run read by default.
         "devices_not_requested": list(not_requested),
+        # A targeted re-collect: only the commands named were sent, so every
+        # other command reads as not collected, and the run is never the
+        # estate's whole reading. `merge` refuses it as a source.
+        "partial": requested_commands is not None,
+        "requested_commands": list(requested_commands or ()),
+        # The full run this re-collect reads again, empty where none was named.
+        "recollect_of": recollect_of if requested_commands is not None else "",
         # Only records the run-wide override; a device that asked for the second
         # enable in the testbed says so in the testbed, which is named above.
         "double_enable": double_enable,

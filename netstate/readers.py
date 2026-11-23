@@ -28,7 +28,8 @@ if TYPE_CHECKING:
 # running configuration is first because both platforms state it the same way
 # and neither abbreviates it; the parsed `show version` is a fallback for a
 # device whose configuration was not collected. Junos is the other way round,
-# for the reason `_hostname_from` gives.
+# for the reason `_hostname_from` gives, and so is NX-OS, whose VDCs name only
+# their own part in the `hostname` line (Platform.hostname_from_version).
 # `hostname X` on the Cisco platforms; `host-name X;` inside `system { }` on
 # Junos, where the line is indented and ends in a semicolon.
 # `switchname X` is the older Nexus spelling of the same line.
@@ -68,6 +69,15 @@ def _hostname_from(snapshot: Any, device: str, declared_os: str) -> str:
                 return path[1].split()[1]
         return ""
     match = HOSTNAME_IN_CONFIG.search(config)
+    if platform is not None and platform.hostname_from_version:
+        # NX-OS: a VDC's `hostname` line names the VDC part only, and
+        # `show version` the whole name the device runs under
+        # (Platform.hostname_from_version). The line is still read.
+        named = platform.version(snapshot.state(device, VERSION_COMMAND)).hostname
+        if named:
+            if match:
+                consume(device, [config.count("\n", 0, match.start("name")) + 1], "readers.hostname")
+            return named
     if match:
         consume(device, [config.count("\n", 0, match.start("name")) + 1], "readers.hostname")
         return match.group("name")

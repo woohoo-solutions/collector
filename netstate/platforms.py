@@ -540,6 +540,15 @@ class Platform:
     # dual-RE Junos box logs in as `X-re0` and is `X` to IS-IS and LDP. Two
     # names that differ only by one of these are one device.
     hostname_suffixes: tuple[str, ...] = ()
+    # Where `show version` names the device and the configuration's
+    # `hostname` line does not say the whole name. A non-default VDC on a
+    # Nexus 7000 runs under `<default VDC switchname>-<VDC name>`: its prompt,
+    # `show version`'s `Device name:` and what it advertises in CDP all carry
+    # that name, while its `hostname` line, where there is one, sets the VDC
+    # part only (first NX-OS field run, 20 November 2026). On a Nexus without
+    # VDCs the two are the same name. Set, `show version` is read first and
+    # the configuration is the fallback.
+    hostname_from_version: bool = False
     # The hostname a box carries before anybody named it (`Router`,
     # `Switch`, IOS-XR's `ios`): what a neighbour reports for a device left
     # at its factory setting. It names nobody, and registered as a hostname
@@ -1159,6 +1168,7 @@ NXOS = Platform(
     feature_gated=(("show ip pim", "pim"),),
     logical_types=("nve",),
     factory_hostnames=("switch",),
+    hostname_from_version=True,
     builtin_names=("tacacs+", "radius", "ldap", "default", "class-default"),
     address_commands={
         # `vrf all` is what makes a VRF-aware switch list every interface.

@@ -175,5 +175,62 @@ class NxosVrfOfItsOwn(unittest.TestCase):
                 self.assertFalse(is_platform_own_vrf(name, "nxos"))
 
 
+class _Stub:
+    """Just what the hostname reader asks of a snapshot: a configuration and a `show version` parse."""
+
+    def __init__(self, config: str, version: dict | None):
+        self._config, self._version = config, version
+
+    def config(self, device):
+        return self._config
+
+    def state(self, device, command):
+        return self._version if command == "show version" else None
+
+
+def _nxos_version(name: str) -> dict:
+    # The shape Genie's NX-OS `show version` parser returns, abridged.
+    return {"platform": {"hardware": {"device_name": name, "model": "Nexus7700 C7706"},
+                         "software": {"system_version": "8.4(7)"}}}
+
+
+class AVdcIsNamedAsShowVersionNamesIt(unittest.TestCase):
+    """NX-OS field run, 20 November 2026: a Nexus 7000 VDC was named by half its name.
+
+    A non-default VDC runs under `<default VDC switchname>-<VDC name>`: its
+    prompt, `show version`'s `Device name:` and its CDP advertisement all say
+    so. Its `hostname` line, where one was set, carries the VDC part only.
+    One member of a vPC pair was documented by the VDC part, its peer (with
+    no `hostname` line) by the whole name, and the peer's CDP neighbour
+    matched no node. Made-up names throughout.
+    """
+
+    def name(self, config, version, os_name="nxos"):
+        from netstate.readers import _hostname_from
+
+        return _hostname_from(_Stub(config, version), "dev", os_name)
+
+    def test_the_whole_name_from_show_version_wins_over_the_vdc_part(self):
+        self.assertEqual(self.name("hostname CORE\n", _nxos_version("c-n7k-1-CORE")), "c-n7k-1-CORE")
+
+    def test_without_a_hostname_line_show_version_names_it_as_before(self):
+        self.assertEqual(self.name("feature lacp\n", _nxos_version("c-n7k-2-CORE")), "c-n7k-2-CORE")
+
+    def test_a_nexus_without_vdcs_reads_the_same_name_either_way(self):
+        self.assertEqual(self.name("hostname c-sw-1\n", _nxos_version("c-sw-1")), "c-sw-1")
+
+    def test_with_no_show_version_parse_the_configuration_still_names_it(self):
+        self.assertEqual(self.name("hostname CORE\n", None), "CORE")
+
+    def test_ios_xe_keeps_the_configuration_first(self):
+        version = {"version": {"hostname": "from-version"}}
+        self.assertEqual(self.name("hostname from-config\n", version, "iosxe"), "from-config")
+
+    def test_only_nx_os_reads_show_version_first(self):
+        flagged = sorted(name for name in ("nxos", "iosxe", "iosxr", "junos", "asa")
+                         if platform_for(name) is not None and platform_for(name).hostname_from_version)
+        self.assertEqual(flagged, ["nxos"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -190,6 +190,18 @@ long on a large chassis, and read-only like every other line.
 
 Built and tested on fixtures and test doubles; not yet run against a device.
 
+## NX-OS names (0.4.1)
+
+A device is named by what it calls itself. On NX-OS that is `show version`'s
+`Device name:`, read before the configuration's `hostname` line. A
+non-default VDC on a Nexus 7000 runs under `<default VDC switchname>-<VDC
+name>`, and that is the name in its prompt, in `show version` and in what
+it advertises in CDP; its `hostname` line, where one is set, names the VDC
+part only. A VDC named by that line alone did not match its neighbours'
+CDP entries. On a Nexus without VDCs both name the same device, and the
+configuration is still read where `show version` was not parsed. Other
+platforms are unchanged.
+
 ## What the export holds
 
 One `.export.tar.gz` file holds only the collection:
